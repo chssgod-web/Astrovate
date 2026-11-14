@@ -100,6 +100,28 @@ FIELD_LABELS = {
 
 UPDATABLE = set(TELEMETRY_FIELDS) | {"notes"}
 
+# Allowed range and input step for manual entry: (min, max, step).
+INPUT_LIMITS = {
+    "radiation_flux": (0, 5000, 1),
+    "cumulative_dose": (0, 5000, 0.1),
+    "cabin_co2": (0, 20, 0.1),
+    "resting_hr": (20, 220, 1),
+    "hrv_rmssd": (0, 300, 1),
+    "systolic_bp": (50, 250, 1),
+    "diastolic_bp": (30, 150, 1),
+    "spo2": (50, 100, 1),
+    "body_temp": (30, 43, 0.1),
+    "wbc_count": (0, 50, 0.1),
+    "radiation_symptoms": (0, 3, 1),
+    "sleep_hours": (0, 24, 0.1),
+    "reaction_time": (50, 2000, 1),
+    "mood_score": (1, 5, 1),
+    "ocular_headache_flag": (0, 2, 1),
+    "exercise_mins": (0, 600, 1),
+    "back_joint_pain": (1, 5, 1),
+}
+INT_FIELDS = {"radiation_symptoms", "mood_score", "ocular_headache_flag", "back_joint_pain"}
+
 SYSTEMS = [
     {
         "id": "cardiovascular",
@@ -571,6 +593,14 @@ def set_spe(active: bool) -> None:
             conn.execute(
                 "INSERT OR REPLACE INTO mission_state(key, value) VALUES('spe_active', '0')"
             )
+
+
+def clear_spe_flag() -> None:
+    """Manual values replace the flare drill, so the drill must not restore old ones later."""
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO mission_state(key, value) VALUES('spe_active', '0')"
+        )
 
 
 def write_reaction(average_ms: float, samples: list[float]) -> None:
@@ -1464,8 +1494,64 @@ def build_page() -> None:
             boxes["reaction_caption"].set_text(
                 f"Logged reaction time today: {report['prepared'].iloc[-1]['reaction_time']:.0f} ms"
             )
+            sync_inputs(report["prepared"].iloc[-1])
         finally:
             state["suspend"] = False
+
+    def sync_inputs(row) -> None:
+        """Make the crew-log sliders and the manual form show what is in the database."""
+        state["mood"] = int(row["mood_score"])
+        state["eyes"] = int(row["ocular_headache_flag"])
+        state["symptoms"] = int(row["radiation_symptoms"])
+        state["pain"] = int(row["back_joint_pain"])
+        boxes["mood_slider"].value = state["mood"]
+        boxes["eye_toggle"].value = state["eyes"]
+        boxes["sym_slider"].value = state["symptoms"]
+        boxes["pain_slider"].value = state["pain"]
+        fill_manual_form(row)
+
+    def fill_manual_form(row) -> None:
+        for key, field in boxes["inputs"].items():
+            value = row[key]
+            field.value = int(value) if key in INT_FIELDS else float(value)
+        boxes["notes_input"].value = str(row["notes"] or "")
+
+    def reset_manual_form() -> None:
+        fill_manual_form(load_df().iloc[-1])
+
+    def dose_from_flux() -> None:
+        flux = boxes["inputs"]["radiation_flux"].value
+        if flux is None:
+            ui.notify("Enter a radiation flux first.", type="warning")
+            return
+        frame = state["df"]
+        prev_dose = float(frame.iloc[-2]["cumulative_dose"]) if len(frame) > 1 else 0.0
+        boxes["inputs"]["cumulative_dose"].value = round(prev_dose + dose_mSv_from_flux(float(flux)), 2)
+
+    def save_manual() -> None:
+        values: dict = {}
+        problems: list[str] = []
+        for key, field in boxes["inputs"].items():
+            label = FIELD_LABELS[key][0]
+            lo, hi, _step = INPUT_LIMITS[key]
+            raw = field.value
+            if raw is None or raw == "":
+                problems.append(f"{label} is empty")
+                continue
+            number = float(raw)
+            if not lo <= number <= hi:
+                problems.append(f"{label} must be between {lo:g} and {hi:g}")
+                continue
+            values[key] = int(round(number)) if key in INT_FIELDS else number
+        if problems:
+            ui.notify("Not saved: " + "; ".join(problems), type="negative", multi_line=True)
+            return
+        values["notes"] = str(boxes["notes_input"].value or "")
+        if state_get("spe_active", "0") == "1":
+            clear_spe_flag()
+        update_today(**values)
+        refresh()
+        ui.notify("Today's telemetry saved and rescored.", type="positive")
 
     def select(system_id: str) -> None:
         if state["suspend"] or system_id not in SYSTEM_IDS:
@@ -1803,7 +1889,7 @@ def build_page() -> None:
                 state["pain"] = int(today["back_joint_pain"])
 
                 boxes["mood_caption"] = ui.label(f"Mood — {MOOD_WORDS[state['mood']]}")
-                ui.slider(min=1, max=5, step=1, value=state["mood"]).on_value_change(
+                boxes["mood_slider"] = ui.slider(min=1, max=5, step=1, value=state["mood"]).on_value_change(
                     lambda e: (
                         boxes["mood_caption"].set_text(f"Mood — {MOOD_WORDS[int(round(float(e.value)))]}"),
                         persist_symptom("mood_score", int(round(float(e.value))), "mood"),
@@ -1811,7 +1897,7 @@ def build_page() -> None:
                 ).props("label-always")
 
                 boxes["eye_caption"] = ui.label(f"Eyes — {EYE_WORDS[state['eyes']]}")
-                ui.toggle(
+                boxes["eye_toggle"] = ui.toggle(
                     {0: "0 Clear", 1: "1 Mild headache", 2: "2 Blurry / SANS"},
                     value=state["eyes"],
                 ).on_value_change(
@@ -1822,7 +1908,7 @@ def build_page() -> None:
                 )
 
                 boxes["sym_caption"] = ui.label(f"Radiation symptoms — {SYM_WORDS[state['symptoms']]}")
-                ui.slider(min=0, max=3, step=1, value=state["symptoms"]).on_value_change(
+                boxes["sym_slider"] = ui.slider(min=0, max=3, step=1, value=state["symptoms"]).on_value_change(
                     lambda e: (
                         boxes["sym_caption"].set_text(
                             f"Radiation symptoms — {SYM_WORDS[int(round(float(e.value)))]}"
@@ -1832,7 +1918,7 @@ def build_page() -> None:
                 )
 
                 boxes["pain_caption"] = ui.label(f"Back / joint pain — {PAIN_WORDS[state['pain']]}")
-                ui.slider(min=1, max=5, step=1, value=state["pain"]).on_value_change(
+                boxes["pain_slider"] = ui.slider(min=1, max=5, step=1, value=state["pain"]).on_value_change(
                     lambda e: (
                         boxes["pain_caption"].set_text(
                             f"Back / joint pain — {PAIN_WORDS[int(round(float(e.value)))]}"
@@ -1840,6 +1926,32 @@ def build_page() -> None:
                         persist_symptom("back_joint_pain", int(round(float(e.value))), "pain"),
                     )
                 )
+        with ui.card().classes("panel w-full"):
+            ui.label("Manual telemetry entry").classes("section-title")
+            ui.label(
+                "Type today's readings and press Save. Values overwrite today's row in "
+                "mission_health.db and every system is rescored. Saving also ends an active flare drill."
+            ).classes("muted")
+            boxes["inputs"] = {}
+            with ui.row().classes("w-full").style("gap:10px; flex-wrap:wrap;"):
+                for key in TELEMETRY_FIELDS:
+                    label, unit, digits = FIELD_LABELS[key]
+                    lo, hi, step = INPUT_LIMITS[key]
+                    boxes["inputs"][key] = ui.number(
+                        label=f"{label} ({unit})",
+                        min=lo,
+                        max=hi,
+                        step=step,
+                        format=f"%.{digits}f",
+                    ).props("outlined dense").style("width:210px;")
+            boxes["notes_input"] = ui.textarea(label="Crew note").props("outlined dense autogrow").classes("w-full")
+            with ui.row().style("gap:10px; flex-wrap:wrap; margin-top:6px;"):
+                ui.button("Save today's telemetry", on_click=save_manual).props("no-caps")
+                ui.button("Calculate dose from flux", on_click=dose_from_flux).props("no-caps outline")
+                ui.button("Reset to saved values", on_click=reset_manual_form).props("no-caps flat")
+            ui.label(
+                "Calculate dose sets cumulative dose to yesterday's total plus 24 hours at the entered flux."
+            ).classes("muted").style("font-size:12px;")
         boxes["charts"] = ui.column().classes("w-full")
 
     refresh()
