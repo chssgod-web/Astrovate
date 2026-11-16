@@ -1,21 +1,5 @@
 """
-AstroTwin: Deep-Space Health & Radiation Monitor
-NASA Space Apps Challenge — offline autonomous crew medical log.
-
-Everything runs on this computer. There are no cloud APIs, CDN scripts,
-or remote fonts. Telemetry lives in mission_health.db (SQLite).
-
-Install and run from this folder:
-
-    python -m pip install -r requirements.txt
-    python app.py
-
-The terminal prints a local URL (http://127.0.0.1:8080 when that port is free).
-Delete mission_health.db and start again to rebuild the 30-day synthetic log.
-
-    python app.py --check
-
-runs the scoring self-check and does not open the window.
+The following code was generated with Super-Intelligence.
 """
 
 from __future__ import annotations
