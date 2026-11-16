@@ -1,5 +1,5 @@
 """
-The following code was generated with Super-Intelligence.
+The following code was generated with Artificial-Intelligence.
 """
 
 from __future__ import annotations
@@ -330,6 +330,31 @@ svg.spe {
   50% { filter: drop-shadow(0 0 18px rgba(255, 90, 106, 1)); }
 }
 svg [data-region] { cursor: pointer; }
+svg.body-svg .zone { fill: transparent; }
+svg.body-svg .zone.sel { fill: rgba(155, 231, 255, 0.07); }
+svg.body-svg .sys { opacity: 0.8; transition: opacity 0.2s; }
+svg.body-svg .sys:hover { opacity: 1; }
+svg.body-svg .sys.sel { opacity: 1; filter: drop-shadow(0 0 2.5px rgba(155, 231, 255, 0.95)); }
+svg.body-svg .heart {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: heartbeat 1.1s ease-in-out infinite;
+}
+@keyframes heartbeat {
+  0%, 48%, 100% { transform: scale(1); }
+  12% { transform: scale(1.07); }
+  24% { transform: scale(1); }
+  36% { transform: scale(1.04); }
+}
+svg.body-svg .lbl text {
+  font: 600 9.5px "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0.05em;
+  fill: #A9B7CC;
+  user-select: none;
+}
+svg.body-svg .lbl polyline { fill: none; stroke: #55688A; stroke-width: 0.7; }
+svg.body-svg .lbl:hover text, svg.body-svg .lbl.sel text { fill: #FFFFFF; }
+svg.body-svg .lbl.sel polyline { stroke: #9BE7FF; stroke-width: 0.9; }
 .q-checkbox__label, .q-toggle__label, .q-slider { color: var(--text); }
 .rules { white-space: pre-wrap; line-height: 1.45; }
 """
@@ -1175,24 +1200,409 @@ def explain(system_id: str, report: dict, data: pd.DataFrame) -> str:
 # Body map and charts
 # ---------------------------------------------------------------------------
 
-def _region(sid: str, d: str, levels: dict, selected: str) -> str:
-    meta = next(item for item in SYSTEMS if item["id"] == sid)
-    fill = COLORS[levels[sid]]
-    stroke = "#9BE7FF" if selected == sid else "#071018"
-    width = 5 if selected == sid else 2
-    title = xml_text(f"{meta['title']} — {LEVEL_NAME[levels[sid]]}")
+BODY_CX = 200          # the figure is symmetric about this x
+BONE_CORE = "#0B1524"  # hollow interior of bones, dark detail lines
+ORGAN_GREY = "#7C8CA6"  # context organs that carry no status
+
+
+def _n(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _mx(points: list[tuple]) -> list[tuple]:
+    """Mirror points across the body midline."""
+    return [(2 * BODY_CX - x, y) for x, y in points]
+
+
+def _smooth(points: list[tuple], closed: bool = False) -> str:
+    """Catmull-Rom spline through the points, written as an SVG cubic path."""
+    n = len(points)
+
+    def at(i: int) -> tuple:
+        return points[i % n] if closed else points[max(0, min(n - 1, i))]
+
+    out = [f"M{_n(points[0][0])},{_n(points[0][1])}"]
+    for i in range(n if closed else n - 1):
+        p0, p1, p2, p3 = at(i - 1), at(i), at(i + 1), at(i + 2)
+        c1 = (p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6)
+        c2 = (p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6)
+        out.append(
+            f"C{_n(c1[0])},{_n(c1[1])} {_n(c2[0])},{_n(c2[1])} {_n(p2[0])},{_n(p2[1])}"
+        )
+    if closed:
+        out.append("Z")
+    return " ".join(out)
+
+
+def _both(points: list[tuple], closed: bool = False) -> list[str]:
+    """Path data for a structure and its mirror image."""
+    return [_smooth(points, closed), _smooth(_mx(points), closed)]
+
+
+def _paths(ds: list[str], attrs: str) -> str:
+    return "".join(f'<path d="{d}" {attrs}/>' for d in ds)
+
+
+def _body_outline() -> str:
+    half = [
+        (200, 22), (188, 24), (178, 32), (174, 46), (174, 60), (177, 74), (183, 86),
+        (187, 95), (186, 106), (176, 113), (160, 117), (146, 121), (136, 130),
+        (130, 146), (127, 170), (124, 196), (119, 224), (111, 260), (103, 292),
+        (98, 312), (97, 330), (101, 338), (107, 336), (112, 322), (117, 300),
+        (127, 264), (137, 230), (145, 198), (150, 170), (153, 152), (156, 170),
+        (159, 205), (163, 238), (159, 264), (155, 290), (154, 330), (158, 380),
+        (164, 425), (162, 452), (161, 480), (167, 530), (172, 562), (165, 578),
+        (160, 590), (170, 597), (186, 596), (192, 588), (190, 572), (189, 540),
+        (191, 490), (190, 452), (192, 422), (196, 370), (198, 332), (200, 320),
+    ]
+    return _smooth(half + _mx(half)[-2:0:-1], closed=True)
+
+
+def _skeleton() -> str:
+    """Bones drawn as wide strokes with a dark core, so joints merge cleanly."""
+    # (x1, y1, x2, y2, width); zero-length entries are joint knobs.
+    left = [
+        (196, 123, 152, 119, 3.4),                               # clavicle
+        (143.5, 129.5, 143.5, 129.5, 9), (143, 131, 129, 221, 6),  # humerus
+        (129, 222, 129, 222, 8),
+        (125.5, 228, 106, 294, 3.8), (132, 227, 113, 294, 3.4),  # radius, ulna
+        (108.5, 300, 108.5, 300, 8),                             # carpals
+        (104, 302, 99.5, 316, 2.2), (106, 304, 99.5, 329, 2.2),  # hand rays
+        (107.5, 304, 102, 334, 2.2), (109, 304, 105, 334, 2.2), (110.5, 304, 108, 330, 2.2),
+        (171.5, 298.5, 171.5, 298.5, 9), (171, 299, 164, 306, 5),  # femoral head, neck
+        (164, 306, 177, 422, 7.5), (177.5, 424, 177.5, 424, 11),   # femur
+        (180, 439, 180, 439, 11), (181, 440, 182.5, 560, 6),       # tibia
+        (171.5, 442, 174, 562, 2.8),                               # fibula
+        (181, 565, 181, 565, 8),                                   # tarsals
+        (178, 570, 166, 590, 2.4), (179.5, 571, 171, 592, 2.4), (181, 571, 176, 593, 2.4),
+        (182.5, 571, 181, 593, 2.4), (184, 570, 186, 592, 2.4),
+    ]
+    bones = left + [(2 * BODY_CX - a, b, 2 * BODY_CX - c, d, w) for a, b, c, d, w in left]
+    outer = "".join(
+        f'<line x1="{_n(a)}" y1="{_n(b)}" x2="{_n(c)}" y2="{_n(d)}" stroke-width="{_n(w)}"/>'
+        for a, b, c, d, w in bones
+    )
+    inner = "".join(
+        f'<line x1="{_n(a)}" y1="{_n(b)}" x2="{_n(c)}" y2="{_n(d)}" '
+        f'stroke-width="{_n(w - 2 if w >= 5 else max(w - 1.5, 0.6))}"/>'
+        for a, b, c, d, w in bones
+    )
+    parts = [
+        f'<g stroke="currentColor" stroke-linecap="round">{outer}</g>',
+        f'<g stroke="{BONE_CORE}" stroke-linecap="round">{inner}</g>',
+    ]
+
+    solid = f'fill="{BONE_CORE}" stroke="currentColor"'
+
+    # Skull, with nasal aperture and teeth. The orbits belong to the neuro layer.
+    skull = [(200, 25), (188, 27), (179, 36), (177, 50), (179, 62), (182, 73),
+             (187, 83), (194, 89), (200, 90)]
+    parts.append(
+        f'<path d="{_smooth(skull + _mx(skull)[-2:0:-1], True)}" {solid} '
+        f'fill-opacity="0.55" stroke-width="1.3"/>'
+        f'<path d="M200,69 L196.5,77 Q200,79.5 203.5,77 Z" {solid} stroke-width="0.8"/>'
+        '<path d="M191,84 H209 M194,82 V86 M197,82 V86 M200,82 V86 M203,82 V86 M206,82 V86 '
+        'M181,70 Q185,74 189,72 M219,70 Q215,74 211,72" fill="none" stroke="currentColor" '
+        'stroke-width="0.8" stroke-linecap="round"/>'
+    )
+
+    # Scapulae, faint, behind the rib cage.
+    scapula = [(153, 124), (170, 128), (167, 158), (159, 166), (151, 142)]
+    parts.append(_paths(_both(scapula, True),
+                        'fill="none" stroke="currentColor" stroke-width="0.9" opacity="0.45"'))
+
+    # Vertebral column: 7 cervical, 12 thoracic, 5 lumbar.
+    spine = []
+    for i in range(7):
+        spine.append((93 + i * 3.6, 2.6, 8))
+    for i in range(12):
+        spine.append((119.5 + i * 7.9, 5.8, 9 + i * 0.28))
+    for i in range(5):
+        spine.append((215 + i * 12.6, 9.6, 13 + i * 0.7))
+    parts.append("".join(
+        f'<rect x="{_n(BODY_CX - w / 2)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}" '
+        f'rx="1.4" {solid} stroke-width="0.9"/>'
+        for y, h, w in spine
+    ))
+
+    # Sacrum and pelvis.
+    ilium = [(195, 286), (189, 274), (176, 269), (164, 272), (160, 283), (165, 295),
+             (173, 301), (179, 311), (187, 320), (196, 318)]
+    parts.append(
+        f'<path d="M191.5,279 L208.5,279 L203.5,300 L200,305 L196.5,300 Z" {solid} '
+        f'stroke-width="1.1" stroke-linejoin="round"/>'
+        + _paths(_both(ilium, True), f'{solid} fill-opacity="0.7" stroke-width="1.3"')
+        + f'<ellipse cx="188" cy="311" rx="3.2" ry="4.2" {solid} stroke-width="0.8"/>'
+        + f'<ellipse cx="212" cy="311" rx="3.2" ry="4.2" {solid} stroke-width="0.8"/>'
+    )
+
+    # Rib cage: ten hooked ribs and two floating ribs per side, plus sternum.
+    widths = [19, 26, 31, 35, 38, 40, 41, 41, 40, 37, 28, 20]
+    ribs = []
+    for side in (-1, 1):
+        for i, w in enumerate(widths):
+            y = 121 + i * 7.9
+
+            def x(dx: float) -> str:
+                return _n(BODY_CX + side * dx)
+
+            d = (f"M{x(4)},{_n(y + 1)} C{x(w * 0.5)},{_n(y - 5)} {x(w)},{_n(y - 4)} "
+                 f"{x(w)},{_n(y + 5 + i * 0.4)}")
+            if i < 10:
+                drop = 9 + i * 1.5
+                d += (f" C{x(w)},{_n(y + 5 + drop * 0.7)} {x(w * 0.75)},{_n(y + drop)} "
+                      f"{x(w * 0.5)},{_n(y + drop)}")
+            if i < 7:
+                d += f" L{x(4.5)},{_n(127 + i * 8.6)}"
+            ribs.append(d)
+    parts.append(
+        _paths(ribs, 'fill="none" stroke="currentColor" stroke-width="1.5" '
+                     'stroke-linecap="round" stroke-linejoin="round" opacity="0.8"')
+        + f'<path d="M196,125 Q200,122 204,125 L204.5,181 L200,190 L195.5,181 Z" {solid} '
+          f'stroke-width="1.1" stroke-linejoin="round"/>'
+    )
+
+    # Patellae sit in front of the knee joint.
+    parts.append(
+        f'<circle cx="178" cy="431" r="3.6" {solid} stroke-width="1.2"/>'
+        f'<circle cx="222" cy="431" r="3.6" {solid} stroke-width="1.2"/>'
+    )
+
+    # A few muscle contours: deltoid, vastus lateralis, gastrocnemius.
+    muscles = (
+        _both([(156, 124), (150, 140), (141, 158), (135, 168)])
+        + _both([(159, 322), (161, 370), (167.5, 414)])
+        + _both([(165, 450), (164, 480), (169, 520)])
+    )
+    parts.append(_paths(muscles, 'fill="none" stroke="currentColor" stroke-width="0.9" '
+                                 'stroke-linecap="round" opacity="0.5"'))
+    return "".join(parts)
+
+
+def _vessels() -> str:
+    """Arterial tree and the central veins. The heart is drawn separately, on top."""
+    line = 'fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
+    arm = [(184, 127), (162, 127), (152, 146), (147, 172), (142.5, 196), (136, 222),
+           (118, 258), (107.5, 292)]
+    leg = [(193, 296), (187, 314), (185.5, 370), (183.5, 425), (186.5, 470),
+           (186.5, 552), (183, 578)]
+    carotid = [(192.5, 110), (191.5, 96), (188, 82), (184, 70), (181, 58)]
+    jugular = [(186, 82), (189, 100), (190, 118)]
+    veins = [
+        (_smooth(jugular + [(194, 134), (195, 150)]), 2),
+        (_smooth(_mx(jugular) + [(205, 130), (196, 140)]), 2),
+        ("M195,184 L195,282", 3),
+        ("M195,282 L187,296 M195,282 L209,297", 2),
+    ]
+    arteries = [
+        ("M206,170 L206,282", 4),
+        (_smooth([(203, 141)] + arm), 1.9),
+        (_smooth([(212, 139)] + _mx(arm)), 1.9),
+        (_smooth([(206, 282)] + leg), 2.2),
+        (_smooth([(206, 282)] + _mx(leg)), 2.2),
+        (_smooth([(201, 141), (194, 128)] + carotid), 1.9),
+        (_smooth([(209, 139), (206, 128)] + _mx(carotid)), 1.9),
+        ("M206,236 L191,241 M206,236 L221,241", 1.5),   # renal branches
+    ]
     return (
-        f'<path data-region="{sid}" d="{d}" fill="{fill}" stroke="{stroke}" '
-        f'stroke-width="{width}" stroke-linejoin="round">'
-        f"<title>{title}</title></path>"
+        '<g opacity="0.5">'
+        + "".join(f'<path d="{d}" {line} stroke-width="{w}"/>' for d, w in veins)
+        + "</g>"
+        + "".join(f'<path d="{d}" {line} stroke-width="{w}"/>' for d, w in arteries)
     )
 
 
-def body_svg(levels: dict, selected: str, flux: float) -> str:
-    """Anatomical silhouette. Four filled regions carry data-region ids.
+def _heart() -> str:
+    outline = [(197, 158), (204, 152), (214, 152), (223, 159), (227, 171), (225, 184),
+               (220, 191), (210, 189), (200, 182), (195, 170)]
+    return (
+        '<g class="heart">'
+        '<path d="M204,156 C204,138 215,134 215,146 C215,155 208,160 206,172" fill="none" '
+        'stroke="currentColor" stroke-width="4.6" stroke-linecap="round"/>'
+        '<path d="M210,157 C210,146 201,145 196,150" fill="none" stroke="currentColor" '
+        'stroke-width="3.6" stroke-linecap="round" opacity="0.8"/>'
+        f'<path d="{_smooth(outline, True)}" fill="currentColor" stroke="{BONE_CORE}" '
+        'stroke-width="0.9"/>'
+        f'<path d="M203,158 Q208,172 217,188 M197,167 Q210,160 224,164 M210,166 Q219,172 222,182" '
+        f'fill="none" stroke="{BONE_CORE}" stroke-width="0.9" stroke-linecap="round" '
+        'opacity="0.55"/>'
+        "</g>"
+    )
 
-    Clicks are handled on the wrapper; the browser reports which region was hit.
-    A halo around the figure pulses while flux is in the storm bands.
+
+def _lymphatics() -> str:
+    dotted = ('fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+              'stroke-dasharray="0.1 3.1"')
+    arm = [(104, 291), (113, 258), (121, 226), (126.5, 196), (130, 168), (137, 140),
+           (152, 124), (168, 117), (181, 115)]
+    axilla = [(157, 153), (168, 134), (181, 115)]
+    neck = [(185, 89), (189, 103), (181, 115)]
+    leg = [(188.5, 548), (189.5, 500), (189, 470), (187.5, 438), (190, 372), (190, 330),
+           (184, 311), (192, 292), (204, 270), (208, 262)]
+    duct = [(208, 262), (211, 240), (211, 180), (212, 140), (216, 124), (219, 115)]
+    ducts = (
+        _both(arm) + _both(axilla) + _both(neck)
+        + [_smooth(leg), _smooth(_mx(leg)[:-1] + [(208, 262)]), _smooth(duct)]
+    )
+    nodes = [(185, 89), (189, 103), (181, 115), (157, 153), (161, 160), (154, 161),
+             (180, 305), (185, 311), (178, 313), (187.5, 438), (186, 250), (184, 262)]
+    nodes += _mx(nodes)
+    spleen = [(226, 210), (234, 212), (238, 222), (234, 234), (227, 232), (224, 221)]
+    marrow = [(165, 312, 176, 414, 2.2), (142, 140, 130.5, 212, 1.8)]
+    marrow += [(2 * BODY_CX - a, b, 2 * BODY_CX - c, d, w) for a, b, c, d, w in marrow]
+    return (
+        "".join(
+            f'<line x1="{_n(a)}" y1="{_n(b)}" x2="{_n(c)}" y2="{_n(d)}" stroke="currentColor" '
+            f'stroke-width="{w}" stroke-linecap="round" opacity="0.9"/>'
+            for a, b, c, d, w in marrow
+        )
+        + _paths(ducts, dotted)
+        + "".join(
+            f'<ellipse cx="{_n(x)}" cy="{_n(y)}" rx="2.3" ry="2.9" fill="currentColor" '
+            f'stroke="{BONE_CORE}" stroke-width="0.7"/>'
+            for x, y in nodes
+        )
+        + f'<path d="{_smooth(spleen, True)}" fill="currentColor" stroke="{BONE_CORE}" '
+          'stroke-width="0.9"/>'
+        + f'<path d="M226,216 Q231,222 229,230" fill="none" stroke="{BONE_CORE}" '
+          'stroke-width="0.8" opacity="0.5"/>'
+        # thymus, two lobes in front of the great vessels
+        + f'<ellipse cx="197.4" cy="143" rx="3.3" ry="6.2" fill="currentColor" '
+          f'stroke="{BONE_CORE}" stroke-width="0.8"/>'
+        + f'<ellipse cx="202.6" cy="143.6" rx="3.3" ry="6.6" fill="currentColor" '
+          f'stroke="{BONE_CORE}" stroke-width="0.8"/>'
+    )
+
+
+def _nerves() -> str:
+    line = 'fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
+    median = [(176, 124), (160, 131), (150, 148), (143.5, 172), (139.5, 196), (133, 222),
+              (123, 258), (113, 292), (108, 303)]
+    sciatic = [(188, 296), (180, 318), (178, 345), (178, 385), (179.5, 420), (177, 445),
+               (176, 480), (177, 552)]
+    thin = []
+    for pts in (median, sciatic):
+        thin += _both(pts)
+    for side in (-1, 1):
+        def x(dx: float) -> str:
+            return _n(BODY_CX + side * dx)
+        # brachial plexus roots, lumbosacral roots, intercostal stubs, finger branches
+        thin += [f"M200,{y} L{x(24)},124" for y in (106, 111, 116, 121)]
+        thin += [f"M200,{y} L{x(12)},296" for y in (256, 266, 276)]
+        thin += [f"M200,{_n(123 + i * 7.9)} L{x(10)},{_n(126 + i * 7.9)}" for i in range(1, 12)]
+        thin += [f"M{x(92)},303 L{x(d)},{y}" for d, y in ((99, 322), (96, 326), (93, 324))]
+    hemisphere = [(199, 28), (191, 27), (183, 32), (179, 41), (181, 50), (188, 55), (199, 55)]
+    gyri = ("M183,37 q4,-4 8,0 t7,-1 M181,44 q5,-4 9,0 t8,0 M184,50 q4,-3 8,0 t6,0 "
+            "M187,31 q4,3 9,1")
+    fold = f'fill="none" stroke="{BONE_CORE}" stroke-width="0.85" stroke-linecap="round" opacity="0.6"'
+    eyes = "".join(
+        f'<circle cx="{cx}" cy="65" r="4.6" fill="{BONE_CORE}" stroke="currentColor" stroke-width="1.2"/>'
+        f'<circle cx="{cx}" cy="65" r="2.3" fill="currentColor"/>'
+        f'<circle cx="{cx}" cy="65" r="0.9" fill="{BONE_CORE}"/>'
+        for cx in (190, 210)
+    )
+    return (
+        _paths(thin, f'{line} stroke-width="1.05" opacity="0.9"')
+        # brainstem, spinal cord, cauda equina
+        + f'<path d="M200,54 L200,252" {line} stroke-width="2.4"/>'
+        + f'<path d="M200,252 L197,284 M200,252 L200,288 M200,252 L203,284" {line} stroke-width="0.9"/>'
+        # optic nerves meet at the chiasm
+        + f'<path d="M190,65 L199,57 M210,65 L201,57" {line} stroke-width="1.5"/>'
+        + _paths(_both(hemisphere, True),
+                 f'fill="currentColor" stroke="{BONE_CORE}" stroke-width="0.9"')
+        + f'<path d="{gyri}" {fold}/>'
+        + f'<path d="{gyri}" {fold} transform="matrix(-1 0 0 1 {2 * BODY_CX} 0)"/>'
+        + eyes
+    )
+
+
+def _context_organs() -> str:
+    """Lungs, airway, liver and gut: drawn for orientation, carry no status."""
+    lung = [(193, 130), (183, 127), (172, 138), (165, 160), (163, 186), (166, 200),
+            (180, 196), (193, 188), (194, 160)]
+    liver = [(165, 208), (178, 202), (196, 203), (212, 209), (204, 220), (186, 228),
+             (170, 230), (164, 220)]
+    return (
+        f'<g pointer-events="none" stroke="{ORGAN_GREY}" fill="{ORGAN_GREY}">'
+        + _paths(_both(lung, True), 'fill-opacity="0.13" stroke-opacity="0.45" stroke-width="0.9"')
+        + '<path d="M200,96 L200,128 M200,128 L190,140 M200,128 L210,140" fill="none" '
+          'stroke-width="3" stroke-opacity="0.3" stroke-linecap="round"/>'
+        + f'<path d="{_smooth(liver, True)}" fill-opacity="0.16" stroke-opacity="0.45" '
+          'stroke-width="0.9"/>'
+        + '<path d="M172,290 L172,250 Q172,240 182,240 L218,240 Q228,240 228,250 L228,290" '
+          'fill="none" stroke-width="5.5" stroke-opacity="0.2" stroke-linecap="round"/>'
+        + '<path d="M182,254 q9,-6 18,0 t18,0 M182,265 q9,6 18,0 t18,0 M182,277 q9,-6 18,0 t18,0" '
+          'fill="none" stroke-width="3.6" stroke-opacity="0.16" stroke-linecap="round"/>'
+        + "</g>"
+    )
+
+
+# Callouts: (side, baseline y, text, system id, target x, target y)
+BODY_LABELS = [
+    ("L", 30, "BRAIN", "neurobehavioral", 181, 41),
+    ("L", 58, "OPTIC NERVE", "neurobehavioral", 193, 62),
+    ("L", 86, "CERVICAL NODES", "immune", 185, 89),
+    ("L", 112, "CLAVICLE", "musculoskeletal", 166, 120.3),
+    ("L", 140, "DELTOID", "musculoskeletal", 150, 140),
+    ("L", 168, "AXILLARY NODES", "immune", 156, 156),
+    ("L", 196, "HUMERUS", "musculoskeletal", 132.9, 196),
+    ("L", 224, "BRACHIAL ARTERY", "cardiovascular", 139.5, 210),
+    ("L", 252, "RADIUS · ULNA", "musculoskeletal", 117, 257),
+    ("L", 280, "MEDIAN NERVE", "neurobehavioral", 116.5, 281),
+    ("L", 366, "INGUINAL NODES", "immune", 178, 313),
+    ("L", 394, "BONE MARROW", "immune", 170.5, 362),
+    ("L", 422, "FEMUR", "musculoskeletal", 175, 405),
+    ("L", 450, "PATELLA", "musculoskeletal", 176, 431),
+    ("L", 478, "TIBIAL NERVE", "neurobehavioral", 176, 478),
+    ("L", 506, "GASTROCNEMIUS", "musculoskeletal", 165.5, 500),
+    ("L", 540, "FIBULA", "musculoskeletal", 173.5, 540),
+    ("R", 30, "SKULL", "musculoskeletal", 221, 35),
+    ("R", 58, "CAROTID ARTERY", "cardiovascular", 213.5, 78),
+    ("R", 86, "JUGULAR VEIN", "cardiovascular", 211, 100),
+    ("R", 110, "SPINAL CORD", "neurobehavioral", 200.5, 116),
+    ("R", 132, "AORTIC ARCH", "cardiovascular", 214.5, 141),
+    ("R", 154, "THYMUS", "immune", 204.5, 147),
+    ("R", 176, "HEART", "cardiovascular", 226, 174),
+    ("R", 198, "RIB CAGE", "musculoskeletal", 239, 196),
+    ("R", 224, "SPLEEN", "immune", 237, 223),
+    ("R", 252, "THORACIC DUCT", "immune", 211, 240),
+    ("R", 280, "ABDOMINAL AORTA", "cardiovascular", 206, 266),
+    ("R", 308, "PELVIS", "musculoskeletal", 238, 286),
+    ("R", 366, "SCIATIC NERVE", "neurobehavioral", 222, 345),
+    ("R", 394, "FEMORAL ARTERY", "cardiovascular", 214.7, 380),
+    ("R", 422, "QUADRICEPS", "musculoskeletal", 233.8, 402),
+    ("R", 450, "POPLITEAL NODE", "immune", 212.5, 438),
+    ("R", 478, "TIBIA", "musculoskeletal", 218.3, 478),
+    ("R", 540, "TIBIAL ARTERY", "cardiovascular", 213.5, 540),
+]
+
+
+def _callouts(levels: dict, selected: str) -> str:
+    out = []
+    for side, y, text, sid, tx, ty in BODY_LABELS:
+        edge, knee, anchor = (-28, 60, "start") if side == "L" else (428, 340, "end")
+        klass = "lbl sel" if sid == selected else "lbl"
+        out.append(
+            f'<g data-region="{sid}" class="{klass}">'
+            f'<polyline points="{edge},{y + 3.5} {knee},{y + 3.5} {_n(tx)},{_n(ty)}"/>'
+            f'<circle cx="{_n(tx)}" cy="{_n(ty)}" r="1.9" fill="{COLORS[levels[sid]]}"/>'
+            f'<rect x="{edge if side == "L" else knee}" y="{y - 10}" width="88" height="15" '
+            f'fill="none" pointer-events="all"/>'
+            f'<text x="{edge}" y="{y}" text-anchor="{anchor}">{xml_text(text)}</text>'
+            "</g>"
+        )
+    return "".join(out)
+
+
+def body_svg(levels: dict, selected: str, flux: float) -> str:
+    """Anatomical plate of the crew member, front view.
+
+    Each of the four systems is drawn as its own anatomy (skeleton and muscle,
+    heart and vessels, lymphatics and marrow, brain and nerves) in that system's
+    status color. Everything carrying a data-region id is clickable; clicks are
+    handled on the wrapper and the browser reports which region was hit. Broad
+    invisible zones (head, chest, abdomen, limbs) catch clicks between the fine
+    lines. The body outline glows while flux is in the storm bands.
     """
     if flux > 500:
         klass = "body-svg spe"
@@ -1201,54 +1611,40 @@ def body_svg(levels: dict, selected: str, flux: float) -> str:
     else:
         klass = "body-svg"
 
-    arms_l = "M72,136 C36,156 22,210 30,300 C36,324 56,320 62,294 L70,230 C74,190 80,160 96,142 Z"
-    arms_r = "M168,136 C204,156 218,210 210,300 C204,324 184,320 178,294 L170,230 C166,190 160,160 144,142 Z"
-    legs = (
-        "M78,330 C74,380 68,450 62,520 L96,520 L104,400 L120,370 L136,400 "
-        "L144,520 L178,520 C172,450 166,380 162,330 C150,348 90,348 78,330 Z"
-    )
-    chest = "M76,128 C76,118 164,118 164,128 L172,210 C172,228 120,236 120,236 C120,236 68,228 68,210 Z"
-    abdomen = "M74,228 L166,228 L174,318 C174,340 120,348 120,348 C120,348 66,340 66,318 Z"
-    neuro_fill, neuro_stroke, neuro_w, neuro_title = (
-        COLORS[levels["neurobehavioral"]],
-        "#9BE7FF" if selected == "neurobehavioral" else "#071018",
-        5 if selected == "neurobehavioral" else 2,
-        xml_text(f"Neurobehavioral & Ocular — {LEVEL_NAME[levels['neurobehavioral']]}"),
-    )
-    # Neck shares the cardiovascular color; the head is the neuro region.
-    neck = COLORS[levels["cardiovascular"]]
+    outline = _body_outline()
+
+    def layer(sid: str, content: str) -> str:
+        meta = next(item for item in SYSTEMS if item["id"] == sid)
+        title = xml_text(f"{meta['title']} — {LEVEL_NAME[levels[sid]]}")
+        sel = " sel" if sid == selected else ""
+        return (
+            f'<g data-region="{sid}" class="sys{sel}" style="color:{COLORS[levels[sid]]}">'
+            f"<title>{title}</title>{content}</g>"
+        )
+
+    def zone(sid: str, shape: str) -> str:
+        sel = " sel" if sid == selected else ""
+        return f'<g data-region="{sid}" class="zone{sel}" clip-path="url(#body-clip)">{shape}</g>'
+
     return f"""
-<svg class="{klass}" viewBox="0 0 240 560" width="100%" height="auto"
-     xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Crew body map">
-  <ellipse class="halo" cx="120" cy="280" rx="112" ry="250" fill="none" stroke-width="4"
-           pointer-events="none"/>
-  {_region("musculoskeletal", arms_l, levels, selected)}
-  {_region("musculoskeletal", arms_r, levels, selected)}
-  {_region("musculoskeletal", legs, levels, selected)}
-  {_region("immune", abdomen, levels, selected)}
-  {_region("cardiovascular", chest, levels, selected)}
-  <rect data-region="cardiovascular" x="106" y="108" width="28" height="24" rx="6"
-        fill="{neck}" stroke="#071018" stroke-width="2">
-    <title>Cardiovascular — neck vessels</title>
-  </rect>
-  <ellipse data-region="neurobehavioral" cx="120" cy="70" rx="38" ry="44"
-           fill="{neuro_fill}" stroke="{neuro_stroke}" stroke-width="{neuro_w}">
-    <title>{neuro_title}</title>
-  </ellipse>
-  <ellipse cx="106" cy="68" rx="4.5" ry="4.5" fill="#071018" pointer-events="none"/>
-  <ellipse cx="134" cy="68" rx="4.5" ry="4.5" fill="#071018" pointer-events="none"/>
-  <path d="M108,88 Q120,96 132,88" fill="none" stroke="#071018" stroke-width="2"
+<svg class="{klass}" viewBox="-30 0 460 620" width="100%" height="auto"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Crew anatomical body map">
+  <defs><clipPath id="body-clip"><path d="{outline}"/></clipPath></defs>
+  <path class="halo" d="{outline}" fill="none" stroke-width="7" stroke-linejoin="round"
         pointer-events="none"/>
-  <path d="M104,162 l8,6 l-8,14 l16,-8 l8,10 l-6,-16 l12,-2 Z" fill="#071018" opacity="0.55"
-        pointer-events="none"/>
-  <text x="120" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#102033"
-        pointer-events="none" font-family="Segoe UI, Arial, sans-serif">NEURO</text>
-  <text x="120" y="188" text-anchor="middle" font-size="11" font-weight="700" fill="#102033"
-        pointer-events="none" font-family="Segoe UI, Arial, sans-serif">HEART</text>
-  <text x="120" y="286" text-anchor="middle" font-size="11" font-weight="700" fill="#102033"
-        pointer-events="none" font-family="Segoe UI, Arial, sans-serif">IMMUNE</text>
-  <text x="120" y="460" text-anchor="middle" font-size="11" font-weight="700" fill="#102033"
-        pointer-events="none" font-family="Segoe UI, Arial, sans-serif">MSK</text>
+  <path data-region="musculoskeletal" d="{outline}" fill="#16233A" stroke="#4A6184"
+        stroke-width="1.4" stroke-linejoin="round"/>
+  {zone("musculoskeletal", f'<path d="{outline}"/>')}
+  {zone("cardiovascular", '<path d="M154,110 H246 V208 H154 Z"/>')}
+  {zone("immune", '<path d="M154,208 H246 V296 L200,324 L154,296 Z"/>')}
+  {zone("neurobehavioral", '<ellipse cx="200" cy="58" rx="30" ry="38"/>')}
+  {_context_organs()}
+  {layer("musculoskeletal", _skeleton())}
+  {layer("cardiovascular", _vessels())}
+  {layer("neurobehavioral", _nerves())}
+  {layer("cardiovascular", _heart())}
+  {layer("immune", _lymphatics())}
+  {_callouts(levels, selected)}
 </svg>
 """
 
@@ -1615,12 +2011,6 @@ def build_page() -> None:
         if isinstance(region, str):
             select(region)
 
-    def toggle_spe() -> None:
-        if state["suspend"]:
-            return
-        set_spe(state_get("spe_active", "0") != "1")
-        refresh()
-
     def persist_symptom(column: str, value: int, cache_key: str) -> None:
         if state["suspend"] or state[cache_key] == value:
             return
@@ -1716,7 +2106,6 @@ def build_page() -> None:
 
     def render_header() -> None:
         report = state["report"]
-        spe_on = state_get("spe_active", "0") == "1"
         boxes["header"].clear()
         with boxes["header"]:
             with ui.column().classes("w-full").style("gap:6px"):
@@ -1739,17 +2128,6 @@ def build_page() -> None:
                     report["dose_level"],
                 )
                 _tile("Cabin CO₂", f"{report['co2']:.1f}", "mmHg", report["co2_level"])
-            with ui.row().classes("items-center").style("gap:12px; margin-top:12px; flex-wrap:wrap;"):
-                ui.button(
-                    "Simulate Solar Particle Event (Flare)",
-                    on_click=toggle_spe,
-                ).classes("flare-btn on" if spe_on else "flare-btn")
-                if spe_on:
-                    ui.label("DRILL ACTIVE — flux locked at 650 µSv/hr. Click again to restore background.").style(
-                        "color:#FF8A96; font-weight:700;"
-                    )
-                else:
-                    ui.label("Drill off. Background flux is the stored cruise value.").classes("muted")
             peak_at = state["df"]["radiation_flux"].idxmax()
             peak = state["df"].loc[peak_at]
             ui.label(
@@ -1771,7 +2149,7 @@ def build_page() -> None:
         with boxes["map"]:
             with ui.card().classes("panel w-full"):
                 ui.label("Body map").classes("section-title")
-                ui.label("Click a region. Color is that system’s status right now.").classes("muted")
+                ui.label("Click a structure or label. Color is that system’s status right now.").classes("muted")
                 svg = ui.html(body_svg(levels, state["selected"], report["flux"]), sanitize=False)
                 svg.on(
                     "click",
