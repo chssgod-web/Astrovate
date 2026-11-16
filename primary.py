@@ -507,6 +507,49 @@ def update_today(**fields) -> None:
         )
 
 
+def start_next_day() -> int:
+    """Close the current day and open the next one. Returns the new day number.
+
+    The new row starts as a copy of the day being closed, so the crew member
+    edits readings instead of typing all of them. The note starts empty and the
+    cumulative dose moves on by 24 hours at the carried flux. An active flare
+    drill ends: the drill values stay on the closed day and the new day starts
+    from the background flux.
+    """
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM daily_telemetry ORDER BY day DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("mission log is empty")
+        values = {key: row[key] for key in TELEMETRY_FIELDS}
+        flux = float(row["radiation_flux"])
+        flag = conn.execute(
+            "SELECT value FROM mission_state WHERE key='spe_active'"
+        ).fetchone()
+        if flag is not None and flag["value"] == "1":
+            saved_flux = conn.execute(
+                "SELECT value FROM mission_state WHERE key='saved_flux'"
+            ).fetchone()
+            flux = float(saved_flux["value"]) if saved_flux else 19.0
+            conn.execute(
+                "INSERT OR REPLACE INTO mission_state(key, value) VALUES('spe_active', '0')"
+            )
+        values["radiation_flux"] = flux
+        values["cumulative_dose"] = round(
+            float(row["cumulative_dose"]) + dose_mSv_from_flux(flux), 2
+        )
+        day = int(row["day"]) + 1
+        when = date.fromisoformat(str(row["date"])) + timedelta(days=1)
+        cols = ["day", "date", "notes", *TELEMETRY_FIELDS]
+        conn.execute(
+            f"INSERT INTO daily_telemetry ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)})",
+            [day, when.isoformat(), "", *(values[key] for key in TELEMETRY_FIELDS)],
+        )
+    return day
+
+
 def checklist_map(day: int) -> dict[str, bool]:
     with db() as conn:
         rows = conn.execute("SELECT item_id, done FROM checklist WHERE day=?", (day,)).fetchall()
@@ -1478,6 +1521,9 @@ def build_page() -> None:
             boxes["reaction_caption"].set_text(
                 f"Logged reaction time today: {report['prepared'].iloc[-1]['reaction_time']:.0f} ms"
             )
+            boxes["day_label"].set_text(
+                f"Now entering log day {report['day']}  ·  {pretty_date(report['date'])}"
+            )
             sync_inputs(report["prepared"].iloc[-1])
         finally:
             state["suspend"] = False
@@ -1536,6 +1582,15 @@ def build_page() -> None:
         update_today(**values)
         refresh()
         ui.notify("Today's telemetry saved and rescored.", type="positive")
+
+    def confirm_next_day() -> None:
+        boxes["next_dialog"].close()
+        if state["phase"] != "idle":
+            ui.notify("Finish the reaction test before starting the next day.", type="warning")
+            return
+        day = start_next_day()
+        refresh()
+        ui.notify(f"Log day {day} started. Enter today's readings and save.", type="positive")
 
     def select(system_id: str) -> None:
         if state["suspend"] or system_id not in SYSTEM_IDS:
@@ -1670,13 +1725,6 @@ def build_page() -> None:
                     "<h1 class='app-title'>Deep-Space Health &amp; Radiation Monitor</h1>",
                     sanitize=False,
                 )
-                ui.label(
-                    f"Sol {report['sol']} — Mars Transit"
-                ).style("font-size:20px; font-weight:700;")
-                ui.label(
-                    f"Medical log day {report['day']} of {N_DAYS}  ·  {pretty_date(report['date'])}  ·  "
-                    "synthetic subject ASTRO-1"
-                ).classes("muted")
                 ui.html(
                     "<div class='badge'>OFFLINE AUTONOMOUS MODE | SIMULATED CREW TELEMETRY</div>",
                     sanitize=False,
@@ -1803,7 +1851,7 @@ def build_page() -> None:
         data = state["report"]["prepared"]
         boxes["charts"].clear()
         with boxes["charts"]:
-            ui.label("30-day trajectories").classes("section-title").style("margin-top:8px;")
+            ui.label(f"{len(data)}-day trajectories").classes("section-title").style("margin-top:8px;")
             ui.label(
                 "Day 24 is the scripted solar particle event. Heart-rate alerts use the "
                 "shifted 7-day mean; the dotted line is the rolling mean itself."
@@ -1912,10 +1960,23 @@ def build_page() -> None:
                 )
         with ui.card().classes("panel w-full"):
             ui.label("Manual telemetry entry").classes("section-title")
+            boxes["day_label"] = ui.label("").style("font-weight:700;")
             ui.label(
                 "Type today's readings and press Save. Values overwrite today's row in "
-                "mission_health.db and every system is rescored. Saving also ends an active flare drill."
+                "mission_health.db and every system is rescored. Saving also ends an active flare drill. "
+                "When the day is over, press Start next day to open a new one."
             ).classes("muted")
+            with ui.dialog() as next_dialog, ui.card().classes("panel"):
+                ui.label("Start the next day?").classes("section-title")
+                ui.label(
+                    "Today is closed and a new day opens, filled with today's saved readings "
+                    "as a starting point. Unsaved edits in the form are discarded, and a "
+                    "started day cannot be removed from here."
+                ).classes("muted")
+                with ui.row().style("gap:10px; margin-top:6px;"):
+                    ui.button("Cancel", on_click=next_dialog.close).props("no-caps flat")
+                    ui.button("Start next day", on_click=confirm_next_day).props("no-caps")
+            boxes["next_dialog"] = next_dialog
             boxes["inputs"] = {}
             with ui.row().classes("w-full").style("gap:10px; flex-wrap:wrap;"):
                 for key in TELEMETRY_FIELDS:
@@ -1933,6 +1994,7 @@ def build_page() -> None:
                 ui.button("Save today's telemetry", on_click=save_manual).props("no-caps")
                 ui.button("Calculate dose from flux", on_click=dose_from_flux).props("no-caps outline")
                 ui.button("Reset to saved values", on_click=reset_manual_form).props("no-caps flat")
+                ui.button("Start next day", on_click=next_dialog.open).props("no-caps outline")
             ui.label(
                 "Calculate dose sets cumulative dose to yesterday's total plus 24 hours at the entered flux."
             ).classes("muted").style("font-size:12px;")

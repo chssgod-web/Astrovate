@@ -1,0 +1,7 @@
+# Local-only stack. No cloud SDKs.
+# NiceGUI serves its own UI assets from the installed package.
+# Plotly.js is bundled with NiceGUI (not loaded from a CDN).
+nicegui>=2.9.0
+pandas>=2.0.0
+numpy>=1.26.0
+plotly>=5.18.0
